@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Build the release zips (drop-in layout for the Fortress Forever game directory, fortressforever/).
 
-  python tools/package.py plugin <version> [--binary PATH] [--out DIR]
+  python tools/package.py plugin <version> [--binary PATH] [--smx PATH] [--out DIR]
   python tools/package.py navs <version> <nav-dir> [--out DIR]
 
 plugin: addons/metamod/ffnextbot.vdf, addons/ffnextbot/bin/ffnextbot.dll, addons/ffnextbot/data/*,
         maps/globalscripts/ffnb_botinfo.lua, cfg/ffnextbot.example.cfg and the license files
-        under addons/ffnextbot/.
+        under addons/ffnextbot/; with --smx, the optional ff_civilian_anywhere SourceMod plugin
+        (addons/sourcemod/plugins/) and its source (addons/sourcemod/scripting/).
 navs:   addons/ffnextbot/nav/*.nav
 """
 import glob, os, sys, zipfile
@@ -48,6 +49,11 @@ def plugin(args):
         add(z, os.path.join(ROOT, "package", "fortressforever", "maps", "globalscripts", "ffnb_botinfo.lua"),
             "maps/globalscripts/ffnb_botinfo.lua")
         z.writestr("cfg/ffnextbot.example.cfg", EXAMPLE_CFG)
+        smx = opt(args, "--smx")
+        if smx:
+            add(z, smx, "addons/sourcemod/plugins/ff_civilian_anywhere.smx")
+            add(z, os.path.join(ROOT, "sourcemod", "scripting", "ff_civilian_anywhere.sp"),
+                "addons/sourcemod/scripting/ff_civilian_anywhere.sp")
         for f in ("LICENSE", "thirdpartylegalnotices.txt", "README.md"):
             add(z, os.path.join(ROOT, f), "addons/ffnextbot/" + f)
     print(path)

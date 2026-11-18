@@ -46,7 +46,8 @@ exactly as before.
 
 1. Download `fortressforever-nextbot-<version>-windows.zip` from the releases and extract it into the
    server's `fortressforever/` directory. It adds `addons/metamod/ffnextbot.vdf`, `addons/ffnextbot/`,
-   `maps/globalscripts/ffnb_botinfo.lua` and `cfg/ffnextbot.example.cfg`.
+   `maps/globalscripts/ffnb_botinfo.lua`, `cfg/ffnextbot.example.cfg` and an optional SourceMod
+   plugin (see below).
 2. Extract `fortressforever-nextbot-navmeshes-<version>.zip` into the same directory, which adds
    `addons/ffnextbot/nav/*.nav`.
 3. Copy the settings you want from `cfg/ffnextbot.example.cfg` into `cfg/server.cfg`.
@@ -55,6 +56,20 @@ exactly as before.
 **`sv_globalluascript`:** the plugin sets it to `ffnb_botinfo` when it's empty. If your server
 already uses a global script, copy `ffnb_botinfo.lua` to `maps/includes/` and add
 `IncludeScript("ffnb_botinfo")` at the end of your global script. The bots still run without the census, but they won't understand objectives.
+
+**Optional: Civilian on every map.** The zip also contains a small SourceMod plugin,
+`addons/sourcemod/plugins/ff_civilian_anywhere.smx` (source in [`sourcemod/`](sourcemod/scripting/)).
+It's independent of the bots, and just for fun: it lets players and bots pick the Civilian on maps
+that don't normally allow it. It does this by changing only the Civilian entry of each active team's
+class limits, so map scripts stay stock.
+
+| Cvar | Default | Meaning |
+|---|---|---|
+| `sm_civanywhere_enabled` | 1 | Master switch |
+| `sm_civanywhere_exclude` | `ff_hunted*,hunted*,ff_training` | Maps (wildcards allowed) where the map's own rules are kept |
+| `sm_civanywhere_limit` | 0 | Civilian limit per team where it's added (0 = unlimited) |
+
+It needs SourceMod with SDK Tools. Delete the `.smx` if you don't want it.
 
 **Upgrading from another FF bot plugin:** remove or disable its Metamod entry; only one bot plugin
 should drive FF's fake clients.
@@ -90,6 +105,7 @@ FF-specific settings:
 | `ffnb_path <bot>` | A bot's current path |
 | `ffnb_area <id>` | One nav area's details |
 | `ffnb_navat x y z [bot]` | The nav area at a point, and whether a bot can reach it |
+| `ffnb_perf [reset]` | Frame profile since the last reset: server frame time, and the plugin's own time split into bot movement, bot thinking, path searches and vision. Use it to tell bot load apart from other server stutter. |
 
 ## Nav meshes
 

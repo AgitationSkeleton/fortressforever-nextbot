@@ -14,6 +14,7 @@
 #include <vphysics_interface.h>
 #include <toolframework/itoolentity.h>
 #include "game/pf2_offsets.h"
+#include "perf.h"
 
 SH_DECL_HOOK6(IServerGameDLL, LevelInit, SH_NOATTRIB, 0, bool, char const *, char const *, char const *, char const *, bool, bool);
 SH_DECL_HOOK3_void(IServerGameDLL, ServerActivate, SH_NOATTRIB, 0, edict_t *, int, int);
@@ -82,10 +83,12 @@ IPF2BotDriver *Drivers_Get(int idx) { return (idx >= 1 && idx <= PF2NB_MAXPLAYER
 int Drivers_HookCalls(int idx) { return (idx >= 1 && idx <= PF2NB_MAXPLAYERS) ? s_hookCalls[idx] : 0; }
 bool Drivers_HookHealthy() { return s_hookHealthy; }
 
+static ConVar nb_invalidate_per_command("ffnb_invalidate_per_command", "1", FCVAR_NONE, "Rescan server-only entities before every bot command (1) or once per frame (0); diagnostics");
 static void Hook_PlayerRunCmd(CUserCmd *ucmd, IMoveHelper *)
 {
 	void *self = META_IFACEPTR(void);
-	PF2_InvalidateEntityCache();   // entity deletions are flushed between calls
+	if (nb_invalidate_per_command.GetBool())
+		PF2_InvalidateEntityCache();   // entity deletions are flushed between calls
 	edict_t *ed = gameents->BaseEntityToEdict((CBaseEntity *)self);
 	int idx = ed ? engine->IndexOfEdict(ed) : 0;
 	if (idx >= 1 && idx <= PF2NB_MAXPLAYERS && s_drivers[idx] && ucmd)
@@ -213,8 +216,15 @@ void PF2NextBotPlugin::Hook_GameFrame(bool simulating)
 {
 	pf2::PF2_InvalidateEntityCache();
 	pf2::Drivers_Frame();
-	pf2::BotManager_OnGameFrame(simulating);
-	pf2::Puppet_Drive();
+	{
+		perf::Scope s(perf::GAMEFRAME);
+		pf2::BotManager_OnGameFrame(simulating);
+	}
+	{
+		perf::Scope s(perf::DRIVE);
+		pf2::Puppet_Drive();
+	}
+	perf::EndFrame();
 	RETURN_META(MRES_IGNORED);
 }
 

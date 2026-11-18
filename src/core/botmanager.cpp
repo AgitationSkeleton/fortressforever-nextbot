@@ -15,6 +15,7 @@
 #include "bot/tf_bot.h"
 #include "bot/tf_bot_manager.h"
 #include "game/ff_census.h"
+#include "perf.h"
 extern int FF_TeamClassLimit(int team, int tfclass);
 extern int FF_TeamClassCount(int team, int tfclass);
 extern bool FF_TeamIsActive(int team);
@@ -89,8 +90,12 @@ public:
 		}
 		if (!pf2nb_enable.GetBool() || !s_navLoaded)
 			return;
+		double t0 = Plat_FloatTime();
 		m_bot->UpdateLastKnownArea();
 		m_bot->PhysicsSimulate();
+		double dt = Plat_FloatTime() - t0;
+		perf::Add(perf::THINK, dt);
+		perf::MaxOf(perf::THINK_MAX_BOT, dt);
 		CUserCmd built;
 		if (!m_bot->TakePendingCmd(&built))
 			return;

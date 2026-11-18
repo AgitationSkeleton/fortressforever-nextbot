@@ -618,7 +618,7 @@ void CBaseObject::DetonateObject()
 		b->ClientCommand(GetType() == OBJ_SENTRYGUN ? "sentrygun" : "dispenser");
 }
 
-#define PF2_AUTOLIST(Iface, Proxy, cls) 	const CUtlVector<Iface *> &Iface::AutoList() 	{ 		static CUtlVector<Iface *> list; static int tick = -1; 		if (tick != gpGlobals->tickcount) { tick = gpGlobals->tickcount; list.RemoveAll(); 			for (CBaseEntity *e = gEntList.FindEntityByClassname(NULL, cls); e; e = gEntList.FindEntityByClassname(e, cls)) 				if (Proxy *p = dynamic_cast<Proxy *>(e)) list.AddToTail(p); } 		return list; 	}
+#define PF2_AUTOLIST(Iface, Proxy, cls) 	const CUtlVector<Iface *> &Iface::AutoList() 	{ 		static CUtlVector<Iface *> list; static int tick = -1; 		if (tick != gpGlobals->framecount) { tick = gpGlobals->framecount; list.RemoveAll(); 			for (CBaseEntity *e = gEntList.FindEntityByClassname(NULL, cls); e; e = gEntList.FindEntityByClassname(e, cls)) 				if (Proxy *p = dynamic_cast<Proxy *>(e)) list.AddToTail(p); } 		return list; 	}
 bool PointInRespawnRoom(const CBaseEntity *pTarget, const Vector &vecOrigin, bool bTouching_SameTeamOnly)
 {
 	const IFuncRespawnRoomAutoList *dummy = NULL; (void)dummy;
@@ -636,7 +636,7 @@ bool PointInRespawnRoom(const CBaseEntity *pTarget, const Vector &vecOrigin, boo
 }
 
 // FFNB: flags and capture zones are the census's Lua objectives, not TF entities
-#define FF_CENSUS_AUTOLIST(Iface, Proxy, kindTest) 	const CUtlVector<Iface *> &Iface::AutoList() 	{ 		static CUtlVector<Iface *> list; static int tick = -1; 		if (tick != gpGlobals->tickcount) { tick = gpGlobals->tickcount; list.RemoveAll(); 			for (int i = 0; i < ff::Census_Count(); ++i) { const ff::CensusObj *o = ff::Census_At(i); 				if (!(kindTest)) continue; 				if (Proxy *p = dynamic_cast<Proxy *>(PF2_EntityByIndex(o->ent))) list.AddToTail(p); } } 		return list; 	}
+#define FF_CENSUS_AUTOLIST(Iface, Proxy, kindTest) 	const CUtlVector<Iface *> &Iface::AutoList() 	{ 		static CUtlVector<Iface *> list; static int tick = -1; 		if (tick != gpGlobals->framecount) { tick = gpGlobals->framecount; list.RemoveAll(); 			for (int i = 0; i < ff::Census_Count(); ++i) { const ff::CensusObj *o = ff::Census_At(i); 				if (!(kindTest)) continue; 				if (Proxy *p = dynamic_cast<Proxy *>(PF2_EntityByIndex(o->ent))) list.AddToTail(p); } } 		return list; 	}
 FF_CENSUS_AUTOLIST(ICaptureZoneAutoList, CCaptureZone, o->kind == ff::OBJ_CAP)
 FF_CENSUS_AUTOLIST(ICaptureFlagAutoList, CCaptureFlag, o->kind == ff::OBJ_FLAG || o->kind == ff::OBJ_BALL)   // a ball is a neutral flag
 
@@ -1037,10 +1037,22 @@ CBasePlayer *CTeam::GetPlayer(int iIndex) const
 
 CTeam *GetGlobalTeam(int iIndex)
 {
-	for (CBaseEntity *e = gEntList.FindEntityByClassname(NULL, "ff_team_manager"); e; e = gEntList.FindEntityByClassname(e, "ff_team_manager"))
-		if (static_cast<CTeam *>(e)->GetTeamNumber() == iIndex)
-			return static_cast<CTeam *>(e);
-	return NULL;
+	// NBPERF: called from IsEnemy/IsFriend and path costs (thousands of times a frame); scan the
+	// entity list for the team managers once per tick
+	static CTeam *s_teams[TF_TEAM_COUNT];
+	static int s_tick = -1;
+	if (s_tick != gpGlobals->framecount)   // framecount never resets across map changes
+	{
+		s_tick = gpGlobals->framecount;
+		memset(s_teams, 0, sizeof(s_teams));
+		for (CBaseEntity *e = gEntList.FindEntityByClassname(NULL, "ff_team_manager"); e; e = gEntList.FindEntityByClassname(e, "ff_team_manager"))
+		{
+			int t = static_cast<CTeam *>(e)->GetTeamNumber();
+			if (t >= 0 && t < TF_TEAM_COUNT)
+				s_teams[t] = static_cast<CTeam *>(e);
+		}
+	}
+	return (iIndex >= 0 && iIndex < TF_TEAM_COUNT) ? s_teams[iIndex] : NULL;
 }
 
 CTFTeam *GetGlobalTFTeam(int iIndex) { return static_cast<CTFTeam *>(GetGlobalTeam(iIndex)); }
@@ -1099,6 +1111,14 @@ const CViewVectors *CGameRules::GetViewVectors() const { return &s_viewVectors; 
 // the gamerules object lives behind the proxy entity's datatable proxy function (as SourceMod does it)
 static void *GameRulesObject(int *outBaseOffsetOfTable = NULL)
 {
+	// NBPERF: path costs ask the game rules for every nav area they expand; find the rules object
+	// once per frame instead of scanning the entity list each call
+	static void *s_obj = NULL;
+	static int s_frame = -1;
+	if (s_frame == gpGlobals->framecount)
+		return s_obj;
+	s_frame = gpGlobals->framecount;
+	s_obj = NULL;
 	CBaseEntity *proxy = gEntList.FindEntityByClassname(NULL, "ff_gamerules");
 	void *raw = proxy ? proxy->GetRaw() : NULL;
 	if (!raw)
@@ -1109,7 +1129,8 @@ static void *GameRulesObject(int *outBaseOffsetOfTable = NULL)
 	if (!p || !p->GetDataTableProxyFn())
 		return NULL;
 	CSendProxyRecipients recip;
-	return (void *)p->GetDataTableProxyFn()(p, raw, (char *)raw + off, &recip, 0);
+	s_obj = (void *)p->GetDataTableProxyFn()(p, raw, (char *)raw + off, &recip, 0);
+	return s_obj;
 }
 
 template <typename T>
@@ -1125,6 +1146,14 @@ static T GameRulesGet(const char *name, T def)
 				sc = c;
 	if (!sc)
 		return def;
+	// NBPERF: offsets by name, computed once (-1 = not present)
+	static const int CACHE = 64;
+	static struct { const char *name; int off; } s_off[CACHE];
+	static int s_n = 0;
+	for (int c = 0; c < s_n; ++c)
+		if (s_off[c].name == name || !V_strcmp(s_off[c].name, name))
+			return s_off[c].off < 0 ? def : *(T *)((char *)gr + s_off[c].off);
+	int found = -1;
 	// offsets inside the gamerules data tables are relative to the gamerules object
 	SendTable *t = sc->m_pTable;
 	for (int i = 0; i < t->GetNumProps(); ++i)
@@ -1137,10 +1166,19 @@ static T GameRulesGet(const char *name, T def)
 		{
 			int off = 0;
 			if (FindSendPropDeep(p->GetDataTable(), name, 0, &off))
-				return *(T *)((char *)gr + off);
+			{
+				found = off;
+				break;
+			}
 		}
 	}
-	return def;
+	if (s_n < CACHE)
+	{
+		s_off[s_n].name = name;   // callers pass string literals
+		s_off[s_n].off = found;
+		++s_n;
+	}
+	return found < 0 ? def : *(T *)((char *)gr + found);
 }
 
 CBaseEntity *CTFGameRules::Ent() const { return gEntList.FindEntityByClassname(NULL, "ff_gamerules"); }

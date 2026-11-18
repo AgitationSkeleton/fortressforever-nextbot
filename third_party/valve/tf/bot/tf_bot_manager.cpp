@@ -482,37 +482,38 @@ void CTFBotManager::MaintainBotQuota()
 		if ( UTIL_KickBotFromTeam( TEAM_UNASSIGNED ) )
 			return;
 
-		int kickTeam;
-
-		CTeam *pRed = GetGlobalTeam( TF_TEAM_RED );
-		CTeam *pBlue = GetGlobalTeam( TF_TEAM_BLUE );
-
-		// remove from the team that has more players
-		if ( pBlue->GetNumPlayers() > pRed->GetNumPlayers() )
+		// FFNB: Valve compared only red and blue. With FF's up to four teams, remove from the active team
+		// with the most players (only teams that still have a quota bot), then the one with the highest
+		// score, then a random one of the tied teams; so a human joining green replaces a green bot.
+		extern bool FF_TeamIsActive( int team );
+		int kickTeam = TEAM_INVALID;
+		int bestPlayers = -1, bestScore = 0, ties = 0;
+		for ( int t = FIRST_GAME_TEAM; t < TF_TEAM_COUNT; ++t )
 		{
-			kickTeam = TF_TEAM_BLUE;
-		}
-		else if ( pBlue->GetNumPlayers() < pRed->GetNumPlayers() )
-		{
-			kickTeam = TF_TEAM_RED;
-		}
-		// remove from the team that's winning
-		else if ( pBlue->GetScore() > pRed->GetScore() )
-		{
-			kickTeam = TF_TEAM_BLUE;
-		}
-		else if ( pBlue->GetScore() < pRed->GetScore() )
-		{
-			kickTeam = TF_TEAM_RED;
-		}
-		else
-		{
-			// teams and scores are equal, pick a team at random
-			kickTeam = (RandomInt( 0, 1 ) == 0) ? TF_TEAM_BLUE : TF_TEAM_RED;
+			CTeam *pTeam = GetGlobalTeam( t );
+			if ( !pTeam || !FF_TeamIsActive( t ) )
+				continue;
+			bool hasBot = false;
+			for ( int i = 1; i <= gpGlobals->maxClients && !hasBot; ++i )
+			{
+				CTFBot *pBot = ToTFBot( UTIL_PlayerByIndex( i ) );
+				hasBot = pBot && pBot->GetTeamNumber() == t && pBot->HasAttribute( CTFBot::QUOTA_MANANGED );
+			}
+			if ( !hasBot )
+				continue;
+			int players = pTeam->GetNumPlayers(), score = pTeam->GetScore();
+			if ( players > bestPlayers || ( players == bestPlayers && score > bestScore ) )
+			{
+				kickTeam = t; bestPlayers = players; bestScore = score; ties = 1;
+			}
+			else if ( players == bestPlayers && score == bestScore && RandomInt( 0, ties++ ) == 0 )
+			{
+				kickTeam = t;   // reservoir pick: each tied team equally likely
+			}
 		}
 
 		// attempt to kick a bot from the given team
-		if ( UTIL_KickBotFromTeam( kickTeam ) )
+		if ( kickTeam != TEAM_INVALID && UTIL_KickBotFromTeam( kickTeam ) )
 			return;
 
 		// if there were no bots on the team, kick a bot from the other team

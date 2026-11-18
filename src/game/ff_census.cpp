@@ -16,16 +16,62 @@ static short s_slotOf[NUM_ENT_ENTRIES];   // index into s_objs + 1, 0 = none
 
 const char *Census_KindName(ObjKind k)
 {
-	static const char *n[] = { "none", "flag", "cap", "ball", "backpack", "hunted_escape", "respawndoor", "cpzone", "other" };
+	static const char *n[] = { "none", "flag", "cap", "ball", "backpack", "hunted_escape", "respawndoor", "cpzone", "security", "other" };
 	return (k >= 0 && k <= OBJ_OTHER) ? n[k] : "?";
 }
 
-static ObjKind Classify(const CensusObj &o)
+// base_shutdown's security switches: "button_red" (func_button pressed by blue) or anything derived
+// from "red_security_trigger" (touched by non-red). Returns the team whose security it turns off.
+static const char *s_teamWords[6] = { NULL, NULL, "blue", "red", "yellow", "green" };
+static bool HasToken(const char *lname, const char *lbase, const char *tok)
+{
+	size_t n = strlen(tok);
+	if (!V_strcmp(lname, tok))
+		return true;
+	// ancestry is "a<b<c": match whole links only
+	for (const char *p = lbase; (p = V_strstr(p, tok)) != NULL; p += n)
+		if ((p == lbase || p[-1] == '<') && (p[n] == 0 || p[n] == '<'))
+			return true;
+	return false;
+}
+static int SecurityOwner(const char *lname, const char *lbase)
+{
+	for (int t = 2; t <= 5; ++t)
+	{
+		char a[48], b[48];
+		V_snprintf(a, sizeof(a), "button_%s", s_teamWords[t]);
+		V_snprintf(b, sizeof(b), "%s_security_trigger", s_teamWords[t]);
+		if (HasToken(lname, lbase, a) || HasToken(lname, lbase, b))
+			return t;
+	}
+	return -1;
+}
+// a trigger whose Lua class is not_<team>_trigger acts on everyone except <team> (base_teamplay)
+static int SpareTeamOf(const char *lname, const char *lbase)
+{
+	for (int t = 2; t <= 5; ++t)
+	{
+		char a[48];
+		V_snprintf(a, sizeof(a), "not_%s_trigger", s_teamWords[t]);
+		if (HasToken(lname, lbase, a))
+			return t;
+	}
+	return -1;
+}
+
+static ObjKind Classify(CensusObj &o)
 {
 	char lname[64], lbase[160];
 	V_strncpy(lname, o.name, sizeof(lname)); V_strlower(lname);
 	V_strncpy(lbase, o.base, sizeof(lbase)); V_strlower(lbase);
 	bool infoScript = !V_stricmp(o.cls, "info_ff_script");
+	int secOwner = infoScript ? -1 : SecurityOwner(lname, lbase);
+	if (secOwner >= 2)
+	{
+		o.owner = secOwner;
+		return OBJ_SECURITY;
+	}
+	o.spareTeam = SpareTeamOf(lname, lbase);
 	if (V_strstr(lbase, "respawndoor"))
 		return OBJ_RESPAWNDOOR;
 	if (!infoScript && V_strstr(lbase, "cp_zone"))
@@ -47,6 +93,8 @@ static ObjKind Classify(const CensusObj &o)
 	return OBJ_OTHER;
 }
 
+static bool s_secKnown[6], s_secUp[6];   // per team: base_shutdown security reported / currently on
+
 static CensusObj *Slot(int ent, bool create)
 {
 	if (ent <= 0 || ent >= NUM_ENT_ENTRIES)
@@ -60,6 +108,7 @@ static CensusObj *Slot(int ent, bool create)
 	o.ent = ent;
 	o.team = -1;
 	o.owner = -1;
+	o.spareTeam = -1;
 	s_slotOf[ent] = (short)(s_objs.AddToTail(o) + 1);
 	return &s_objs[s_slotOf[ent] - 1];
 }
@@ -143,6 +192,28 @@ public:
 			if (CensusObj *o = Slot(ent, false))
 				o->disabled = !V_strcmp(v1, "removed");
 		}
+		else if (!V_strcmp(ev, "ffnb_explode"))
+		{
+			// explosion-handling zones that only block grenades (nogrens, noannoyances) or tutorials are not targets
+			CensusObj *o = Slot(ent, false);
+			// only brush triggers are places a detpack goes (info_ff_script items like backpacks are not)
+			if (o && V_stricmp(o->cls, "info_ff_script") && !V_stristr(o->base, "nogrens") && !V_stristr(o->base, "noannoyances") && !V_stristr(o->base, "training") &&
+				!V_stristr(o->name, "nogrens") && !V_stristr(o->name, "noannoyances"))
+				o->detTarget = true;
+		}
+		else if (!V_strcmp(ev, "ffnb_security"))
+		{
+			// value1 = team number, value2 = "up" / "down" (base_shutdown's button_<team>.sec_up)
+			int t = atoi(v1);
+			if (t >= 2 && t <= 5)
+			{
+				bool up = !V_strcmp(v2, "up");
+				if (s_secKnown[t] && s_secUp[t] != up)
+					PF2NB_Log("security of team %d is now %s", t, up ? "UP" : "DOWN");
+				s_secKnown[t] = true;
+				s_secUp[t] = !V_strcmp(v2, "up");
+			}
+		}
 		else if (!V_strcmp(ev, "ffnb_owner"))
 		{
 			if (CensusObj *o = Slot(ent, false))
@@ -156,8 +227,8 @@ public:
 			int counts[OBJ_OTHER + 1] = { 0 };
 			FOR_EACH_VEC(s_objs, i)
 				counts[s_objs[i].kind]++;
-			PF2NB_Log("census: %d objects (flags %d, caps %d, balls %d, backpacks %d, escapes %d, doors %d)", s_objs.Count(),
-				counts[OBJ_FLAG], counts[OBJ_CAP], counts[OBJ_BALL], counts[OBJ_BACKPACK], counts[OBJ_HUNTED_ESCAPE], counts[OBJ_RESPAWNDOOR]);
+			PF2NB_Log("census: %d objects (flags %d, caps %d, balls %d, backpacks %d, escapes %d, doors %d, security switches %d)", s_objs.Count(),
+				counts[OBJ_FLAG], counts[OBJ_CAP], counts[OBJ_BALL], counts[OBJ_BACKPACK], counts[OBJ_HUNTED_ESCAPE], counts[OBJ_RESPAWNDOOR], counts[OBJ_SECURITY]);
 		}
 	}
 };
@@ -195,6 +266,8 @@ void Census_Reset()
 	s_objs.RemoveAll();
 	s_done = false;
 	V_memset(s_slotOf, 0, sizeof(s_slotOf));
+	V_memset(s_secKnown, 0, sizeof(s_secKnown));
+	V_memset(s_secUp, 0, sizeof(s_secUp));
 	for (int i = 0; i < NUM_ENT_ENTRIES; ++i)
 		s_teamOf[i] = -1;
 }
@@ -203,6 +276,9 @@ bool Census_Done() { return s_done; }
 int Census_Count() { return s_objs.Count(); }
 const CensusObj *Census_At(int i) { return (i >= 0 && i < s_objs.Count()) ? &s_objs[i] : NULL; }
 const CensusObj *Census_Get(int ent) { return (ent > 0 && ent < NUM_ENT_ENTRIES && s_slotOf[ent]) ? &s_objs[s_slotOf[ent] - 1] : NULL; }
+bool Census_SecurityKnown(int team) { return team >= 2 && team <= 5 && s_secKnown[team]; }
+bool Census_SecurityUp(int team) { return Census_SecurityKnown(team) && s_secUp[team]; }
+int Census_SpareTeam(int ent) { const CensusObj *o = Census_Get(ent); return o ? o->spareTeam : -1; }
 int Census_Team(int ent) { return (ent > 0 && ent < NUM_ENT_ENTRIES) ? s_teamOf[ent] : -1; }
 
 bool Census_CapAccepts(const CensusObj *cap, const char *itemName)
@@ -227,11 +303,15 @@ bool Census_CapAccepts(const CensusObj *cap, const char *itemName)
 } // namespace ff
 
 int FF_CensusTeamOf(int entindex) { return ff::Census_Team(entindex); }
+int FF_CensusSpareTeam(int entindex) { return ff::Census_SpareTeam(entindex); }
 
 CON_COMMAND(ffnb_census, "List the map's Lua objectives as reported by the census script")
 {
 	using namespace ff;
 	Msg("[FFNB] census %s, %d objects\n", Census_Done() ? "complete" : "NOT received (is sv_globalluascript ffnb_botinfo set?)", Census_Count());
+	for (int t = 2; t <= 5; ++t)
+		if (Census_SecurityKnown(t))
+			Msg("  security of team %d: %s\n", t, Census_SecurityUp(t) ? "UP" : "down");
 	bool all = args.ArgC() > 1 && !V_stricmp(args[1], "all");
 	for (int i = 0; i < Census_Count(); ++i)
 	{
@@ -239,7 +319,7 @@ CON_COMMAND(ffnb_census, "List the map's Lua objectives as reported by the censu
 		if (!all && (o->kind == OBJ_OTHER || o->kind == OBJ_BACKPACK))
 			continue;
 		Msg("  #%-4d %-12s %-24s team %2d goal %d %s%s%s%s\n", o->ent, Census_KindName(o->kind), o->name, o->team, o->goal,
-			o->disabled ? "[removed] " : "", o->kind == OBJ_CPZONE ? UTIL_VarArgs("owner %d ", o->owner) : "",
+			o->disabled ? "[removed] " : "", (o->kind == OBJ_CPZONE || o->kind == OBJ_SECURITY) ? UTIL_VarArgs("owner %d ", o->owner) : "",
 			o->items[0] ? "accepts " : "", o->items);
 	}
 }

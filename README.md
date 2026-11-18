@@ -16,6 +16,7 @@ and shares its core.
 | Command points (`base_cp`) | Take the nearest zone their side doesn't own, otherwise hold the owned zone nearest the front. |
 | Ball (`base_fortball`) | Treat the ball as a neutral flag and carry it to their goal. |
 | Hunted (`base_hunted`) | One Civilian VIP heads for the escape. Allied bodyguards climb up and press the escape-door buttons, then escort. Assassins hunt the VIP. |
+| Security (`base_shutdown`: ff_destroy, ff_schtop, ...) | A bot going for a flag that sits behind active security first goes to the enemy's security switch (`button_<team>` or `<team>_security_trigger`), touching, using and shooting it, then takes the flag while security is down. Lasers and slayers are avoided per their Lua team filter. |
 | Deathmatch / teamplay / anything else | Roam and fight (TFBot SeekAndDestroy), across up to four teams with FFA and ally rules respected. |
 
 ### Class abilities
@@ -24,8 +25,11 @@ and shares its core.
 - Medics heal and cure teammates with the medkit.
 - Engineers repair teammates' armour.
 - Bots pick up backpacks for health, ammo and armour.
-- Spies disguise.
-- Everyone primes and throws FF grenades. Laser and slowfield grenades are used for area denial.
+- Spies disguise and sabotage enemy sentries and dispensers FF-style (disguised, standing still for 3 s), then turn the sentry on its team (`sentrysabotage`) or blow the dispenser up a few seconds later (`dispensersabotage`).
+- Demomen plant detpacks (`detpack 5`) on the map's detpack targets: Lua triggers with their own `onexplode` handler, such as `<team>_detpack_trigger` walls and `base_cp` command centres (`ff_bot_detpack`).
+- Pyros use the jetpack on jumps, when stuck and to chase enemies above them (`ff_bot_jetpack`). Medics never throw away health packs through TF2's uber button.
+- Scouts build a jump pad (`mancannon`) where a simulated launch lands them at least `ff_bot_jumppad_min_gain` units closer to the flag, then ride it (`ff_bot_jumppad`).
+- Everyone primes and throws FF grenades, picking the grenade per situation: MIRV against groups and buildings, EMP against buildings and ammo-heavy classes, napalm against groups, conc up close, frags otherwise. Caltrops, laser and slowfield grenades are used for area denial. `ffnb_grenades` counts throws.
 
 ### How bots understand the map's game mode
 
@@ -93,6 +97,11 @@ FF-specific settings:
 | `ff_bot_armor_ratio` | 0.5 | Look for armour below this fraction of the class maximum |
 | `ffnb_census_script` | 1 | Set `sv_globalluascript ffnb_botinfo` when it's empty |
 | `ffnb_spawnroom_radius` | 600 | Nav areas this close to a team spawn count as its spawn room |
+| `ff_bot_auto_balance` | 1 | Even out team sizes (all active teams) by replacing a bot on the biggest team |
+| `ff_bot_detpack` | 1 | Demomen plant detpacks on detpack targets |
+| `ff_bot_jetpack` | 1 | Pyros use the jetpack |
+| `ff_bot_jumppad` | 1 | Scouts build and ride jump pads |
+| `ff_bot_jumppad_min_gain` | 600 | Path distance a jump pad launch must save |
 
 ### Debug commands
 
@@ -105,6 +114,8 @@ FF-specific settings:
 | `ffnb_path <bot>` | A bot's current path |
 | `ffnb_area <id>` | One nav area's details |
 | `ffnb_navat x y z [bot]` | The nav area at a point, and whether a bot can reach it |
+| `ffnb_grenades [reset]` | Grenade throws per class and slot |
+| `ffnb_field <ent> <field> [int\|float\|bool]` | Read an entity field by name |
 | `ffnb_perf [reset]` | Frame profile since the last reset: server frame time, and the plugin's own time split into bot movement, bot thinking, path searches and vision. Use it to tell bot load apart from other server stutter. |
 
 ## Nav meshes
@@ -139,6 +150,9 @@ python tools/package.py plugin <version>
 GitHub Actions builds every push and publishes release zips for `v*` tags.
 
 ## Known gaps
+
+- **Map scripts that never load:** some community map scripts extend a `trigger_detpackable_door` class that FF 2.0 does not define (ff_cornfield, ff_ksour, ff_ksour_classic, ff_napoli, ff_avanti_classic), so the whole script fails and the map's objectives do not run, for humans or bots. Adding `trigger_detpackable_door = trigger_detpackable_door or trigger_ff_script:new({})` at the end of `maps/includes/base_teamplay.lua` fixes them (re-add it after FF updates). Maps with no script at all (e.g. ff_2fort5) fall back to `default.lua` and spawn players in the wrong base; ff_2fort5 works with a copy of `ff_2fort.lua`.
+- **Nav meshes:** ship one for every map on the server, not just the rotation; without one the bots cannot play the map (the plugin says so in chat).
 
 - **Linux:** FF ships a Linux `server.so`, but the FF game layer hasn't been ported or tested there.
 - **Spawn rooms:** they are inferred from team spawn names or teams. Maps whose spawns carry no team

@@ -90,6 +90,30 @@ static float LobPitch(float dist, float dz)
 	return -RAD2DEG(angle);
 }
 
+// throws per class and slot since the last reset (ffnb_grenades), counted at release by the plugin
+// itself, since FF sends no grenade event the soak tools could read
+static int s_throws[TF_CLASS_COUNT_ALL][2];
+static int s_throwWeapon[TF_CLASS_COUNT_ALL][2];
+static void CountThrow(int cls, int slot, int weaponId)
+{
+	if (cls > 0 && cls < TF_CLASS_COUNT_ALL && (slot == 0 || slot == 1))
+	{
+		++s_throws[cls][slot];
+		s_throwWeapon[cls][slot] = weaponId;
+	}
+}
+CON_COMMAND(ffnb_grenades, "ffnb_grenades [reset]: bot grenade throws per class and slot")
+{
+	if (args.ArgC() > 1 && !V_stricmp(args[1], "reset"))
+	{
+		V_memset(s_throws, 0, sizeof(s_throws));
+		return;
+	}
+	for (int c = 1; c < TF_CLASS_COUNT_ALL; ++c)
+		if (s_throws[c][0] || s_throws[c][1])
+			Msg("[FFNB] %-10s slot1 %4d (weapon %d)  slot2 %4d (weapon %d)\n", PF2_ClassName(c), s_throws[c][0], s_throwWeapon[c][0], s_throws[c][1], s_throwWeapon[c][1]);
+}
+
 static bool PickThrow(CTFBot *bot, int *outSlot, Vector *outTarget)
 {
 	const PF2ClassData *cd = PF2_GetClassData(bot->GetPlayerClass()->GetClassIndex());
@@ -101,21 +125,72 @@ static bool PickThrow(CTFBot *bot, int *outSlot, Vector *outTarget)
 	float enemyDist = enemy ? (enemy->GetAbsOrigin() - me).Length() : FLT_MAX;
 	bool enemyVisible = threat && threat->IsVisibleRecently();
 
+	// FFNB: score both slots instead of taking the first that fits, so situational grenades (MIRV,
+	// EMP, napalm, conc) come out when they pay off and not only after the frags run out
+	int bestSlot = -1;
+	float bestScore = 0.0f;
+	Vector bestTarget = vec3_origin;
+	int group = 0;   // enemies (players) within 300 units of the threat
+	bool building = enemy && enemy->IsBaseObject();
+	int enemyClass = 0;
+	if (enemy && enemyVisible)
+	{
+		if (CTFPlayer *ep = ToTFPlayer(enemy))
+			enemyClass = ep->GetPlayerClass()->GetClassIndex();
+		for (int i = 1; i <= gpGlobals->maxClients; ++i)
+		{
+			CTFPlayer *p = ToTFPlayer(UTIL_PlayerByIndex(i));
+			if (p && p->IsAlive() && bot->IsEnemy(p) && (p->GetAbsOrigin() - enemy->GetAbsOrigin()).IsLengthLessThan(300.0f))
+				++group;
+		}
+	}
+	bool inRange = enemy && enemyVisible && enemyDist >= tf_bot_grenade_min_range.GetFloat() && enemyDist <= tf_bot_grenade_max_range.GetFloat();
+	bool ammoHeavy = enemyClass == TF_CLASS_SOLDIER || enemyClass == TF_CLASS_HEAVYWEAPONS || enemyClass == TF_CLASS_DEMOMAN || enemyClass == TF_CLASS_ENGINEER;
+	for (int slot = 0; slot < 2; ++slot)
+	{
+		if (bot->GetGrenadeCount(slot) <= 0 || RoleOf(cd->grenade[slot]) != GREN_OFFENSIVE)
+			continue;
+		float score = 0.0f;
+		switch (cd->grenade[slot])
+		{
+		case TF_WEAPON_GRENADE_MIRV:
+		case TF_WEAPON_GRENADE_MIRV_DEMOMAN:
+			score = inRange ? ((group >= 2 || building) ? 2.0f : 0.6f) : 0.0f;
+			break;
+		case TF_WEAPON_GRENADE_EMP:
+			score = inRange ? ((building || ammoHeavy) ? 1.8f : 0.6f) : 0.0f;
+			break;
+		case TF_WEAPON_GRENADE_NAPALM:
+			score = inRange ? (group >= 2 ? 1.5f : 0.9f) : 0.0f;
+			break;
+		case TF_WEAPON_GRENADE_CONCUSSION:
+			// knocks the target around; only worth it up close
+			score = (enemy && enemyVisible && enemyDist <= 600.0f && !building) ? 1.1f : 0.0f;
+			break;
+		default:
+			score = inRange ? 1.0f : 0.0f;
+			break;
+		}
+		if (score > bestScore)
+		{
+			bestScore = score;
+			bestSlot = slot;
+		}
+	}
+	if (bestSlot >= 0)
+	{
+		bestTarget = enemy->GetAbsOrigin() + enemy->GetAbsVelocity() * 0.5f;   // lead toward where it is heading
+		*outSlot = bestSlot;
+		*outTarget = bestTarget;
+		return true;
+	}
+
 	for (int slot = 0; slot < 2; ++slot)
 	{
 		if (bot->GetGrenadeCount(slot) <= 0)
 			continue;
 		switch (RoleOf(cd->grenade[slot]))
 		{
-		case GREN_OFFENSIVE:
-			if (enemy && enemyVisible && enemyDist >= tf_bot_grenade_min_range.GetFloat() && enemyDist <= tf_bot_grenade_max_range.GetFloat())
-			{
-				// lead slightly toward where the target is heading
-				*outTarget = enemy->GetAbsOrigin() + enemy->GetAbsVelocity() * 0.5f;
-				*outSlot = slot;
-				return true;
-			}
-			break;
 		case GREN_AREA_DENIAL:
 			if (enemy && enemyVisible && enemyDist < 600.0f)
 			{
@@ -201,6 +276,8 @@ void PF2Grenades_Think(CTFBot *bot, CUserCmd *cmd)
 		g.throwAngles = a;
 		cmd->viewangles = a;
 		g.releaseTicks = 2;
+		if (const PF2ClassData *tcd = PF2_GetClassData(bot->GetPlayerClass()->GetClassIndex()))
+			CountThrow(bot->GetPlayerClass()->GetClassIndex(), g.slot, tcd->grenade[g.slot]);
 		g.slot = -1;
 		g.nextConsider = now + 2.0f;
 		return;

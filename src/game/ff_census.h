@@ -19,6 +19,8 @@ enum ObjKind
 	OBJ_HUNTED_ESCAPE,
 	OBJ_RESPAWNDOOR,    // team-only spawn door trigger
 	OBJ_CPZONE,         // command point zone (base_cp): stand in it to capture, owner from Lua
+	OBJ_SECURITY,       // base_shutdown security switch (button_<team> or <team>_security_trigger); owner = the team
+	                    // whose security it turns off (lasers, flag room doors), touched/pressed by its enemies
 	OBJ_OTHER,
 };
 
@@ -37,7 +39,9 @@ struct CensusObj
 	ObjKind kind;
 	bool disabled;        // from ffnb_state (Lua Remove/Restore), default false
 	int  touchMask;       // teams allowed to touch it (1 << team), -1 = any
-	int  owner;           // command points: owning (defending) team, 0 = neutral, -1 unknown
+	int  owner;           // command points: owning (defending) team, 0 = neutral, -1 unknown; security: whose
+	bool detTarget;       // trigger with its own Lua onexplode (detpack walls, command centres): detpack it
+	int  spareTeam;       // Lua filter not_<team>_trigger: the one team it does not act on, -1 if none
 	int  packHealth, packArmor, packAmmo, packGrenades;   // backpacks only
 };
 
@@ -52,5 +56,8 @@ const CensusObj *Census_Get(int entindex);   // NULL if the census does not know
 int  Census_Team(int entindex);             // Lua team of a census object, -1 if unknown
 bool Census_CapAccepts(const CensusObj *cap, const char *itemName);
 const char *Census_KindName(ObjKind k);
+bool Census_SecurityKnown(int team);        // the map has a base_shutdown security system for this team
+bool Census_SecurityUp(int team);           // that system is currently on (lasers up, flag room shut)
+int  Census_SpareTeam(int entindex);        // trigger whose Lua filter spares one team (not_<team>_trigger): that team, else -1
 
 } // namespace ff

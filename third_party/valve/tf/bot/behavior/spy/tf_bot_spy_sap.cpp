@@ -80,6 +80,41 @@ ActionResult< CTFBot >	CTFBotSpySap::Update( CTFBot *me, float interval )
 		}
 	}
 
+#ifdef FFNB
+	// FF has no sapper: a spy disguised as the building's team, uncloaked and standing still, looks at it
+	// from within 100 units for 3 s (CFFPlayer::SpySabotageThink). Then "sentrysabotage" turns a sentry on
+	// its own team, and "dispensersabotage" blows a dispenser up (done a few seconds later, from a distance).
+	const float sapRange = 70.0f;
+	if ( me->IsRangeLessThan( m_sapTarget, sapRange ) )
+	{
+		if ( me->m_Shared.IsStealthed() )
+		{
+			me->ClientCommand( "cloak" );   // FF toggles cloak with a command
+		}
+		me->GetLocomotionInterface()->Stop();
+		me->GetBodyInterface()->AimHeadTowards( m_sapTarget->WorldSpaceCenter(), IBody::MANDATORY, 0.1f, NULL, "Sabotaging" );
+		if ( m_sapTarget->HasSapper() )
+		{
+			if ( m_sapTarget->ObjectType() == OBJ_SENTRYGUN )
+			{
+				me->ClientCommand( "sentrysabotage" );
+			}
+			else
+			{
+				extern void FF_ScheduleDispenserDetonate( CTFBot *bot, float delay );
+				FF_ScheduleDispenserDetonate( me, RandomFloat( 4.0f, 8.0f ) );
+			}
+			CBaseObject *nextTarget = me->GetNearestKnownSappableTarget();
+			if ( nextTarget && nextTarget != m_sapTarget.Get() )
+			{
+				m_sapTarget = nextTarget;
+				return Continue();
+			}
+			return Done( "Sabotaged" );
+		}
+		return Continue();
+	}
+#else
 	const float sapRange = 40.0f;
 
 	if ( me->IsRangeLessThan( m_sapTarget, 2.0f * sapRange ) )
@@ -104,6 +139,7 @@ ActionResult< CTFBot >	CTFBotSpySap::Update( CTFBot *me, float interval )
 
 		me->PressFireButton();
 	}
+#endif
 
 	if ( me->IsRangeGreaterThan( m_sapTarget, sapRange ) )
 	{

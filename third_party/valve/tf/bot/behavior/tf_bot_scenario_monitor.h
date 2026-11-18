@@ -19,6 +19,7 @@ public:
 private:
 	CountdownTimer m_ignoreLostFlagTimer;
 	CountdownTimer m_lostFlagTimer;
+	CountdownTimer m_ffDetpackTimer;	// FFNB: how often a demoman considers planting a detpack
 	CountdownTimer m_pf2RestartTimer;	// PF2NB: re-choose a scenario action when the current one finished
 
 	virtual Action< CTFBot > *DesiredScenarioAndClassAction( CTFBot *me );

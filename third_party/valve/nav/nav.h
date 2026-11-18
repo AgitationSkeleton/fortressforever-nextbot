@@ -441,6 +441,17 @@ inline bool IsEntityWalkable( CBaseEntity *entity, unsigned int flags )
 		return (flags & WALK_THRU_PROP_DOORS) ? true : false;
 	}
 
+	// FFNB: door models (prop_dynamic) parented to a func_door move with it (ff_shutdown2's spawn doors);
+	// treat them as the door they belong to
+	if (FClassnameIs( entity, "prop_dynamic*" ))
+	{
+		CBaseEntity *parent = entity->HandleField( "m_hMoveParent" );
+		if ( parent && ( FClassnameIs( parent, "func_door*" ) || FClassnameIs( parent, "func_movelinear" ) ) )
+		{
+			return (flags & WALK_THRU_FUNC_DOORS) ? true : false;
+		}
+	}
+
 	// if we hit a clip brush, ignore it if it is not BRUSHSOLID_ALWAYS
 	if (FClassnameIs( entity, "func_brush" ))
 	{

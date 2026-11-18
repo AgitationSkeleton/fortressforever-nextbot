@@ -29,6 +29,8 @@ private:
 	bool m_isTemporary;
 	PathFollower m_path;
 	CountdownTimer m_repathTimer;
+	CountdownTimer m_securityRetryTimer;
+	CountdownTimer m_jumpPadTimer;         // FFNB: how often a scout looks for a jump pad launch toward the flag   // FFNB: after giving up on an enemy security switch, wait before retrying
 };
 
 

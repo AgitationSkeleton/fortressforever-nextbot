@@ -1299,8 +1299,8 @@ CON_COMMAND(ffnb_teams, "FF team setup as the bots see it: active, player limit,
 		char limits[128] = "";
 		for (int c = 1; c <= 10; ++c)
 			V_strncat(limits, UTIL_VarArgs(" %d", FF_TeamClassLimit(t, c)), sizeof(limits));
-		Msg("[FFNB] team %d: players %d active=%d max=%d allies=0x%x ffa=%d friendly-to:%s%s%s%s classes:%s",
-			t, team->GetNumPlayers(), FF_TeamIsActive(t) ? 1 : 0, maxp ? *maxp : -99, team->GetAllies(), team->IsFFA() ? 1 : 0,
+		Msg("[FFNB] team %d: score %d players %d active=%d max=%d allies=0x%x ffa=%d friendly-to:%s%s%s%s classes:%s",
+			t, team->GetScore(), team->GetNumPlayers(), FF_TeamIsActive(t) ? 1 : 0, maxp ? *maxp : -99, team->GetAllies(), team->IsFFA() ? 1 : 0,
 			FF_AreTeamsFriendly(t, 2) ? " 2" : "", FF_AreTeamsFriendly(t, 3) ? " 3" : "", FF_AreTeamsFriendly(t, 4) ? " 4" : "",
 			FF_AreTeamsFriendly(t, 5) ? " 5" : "", limits);
 		Msg("\n");

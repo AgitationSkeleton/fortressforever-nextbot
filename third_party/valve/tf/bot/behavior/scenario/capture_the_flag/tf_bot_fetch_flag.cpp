@@ -10,6 +10,8 @@
 #include "bot/behavior/scenario/capture_the_flag/tf_bot_escort_flag_carrier.h"
 #include "bot/behavior/scenario/capture_the_flag/tf_bot_attack_flag_defenders.h"
 #include "bot/behavior/scenario/capture_the_flag/tf_bot_deliver_flag.h"
+#include "behaviors/ff_disable_security.h"   // FFNB
+#include "behaviors/ff_jump_pad.h"           // FFNB
 
 
 //---------------------------------------------------------------------------------------------
@@ -84,6 +86,26 @@ ActionResult< CTFBot > CTFBotFetchFlag::Update( CTFBot *me, float interval )
 
 		// NOTE: if I've picked up the flag, the ScenarioMonitor will handle it
 		return SuspendFor( new CTFBotAttackFlagDefenders, "Someone has the flag - attacking the enemy defenders" );
+	}
+
+	// FFNB: base_shutdown maps keep a flag at home behind security (lasers, flag room door) that its
+	// enemies must turn off first; go do that, then come back for the flag while it is down
+	if ( flag->IsHome() && m_securityRetryTimer.IsElapsed() && CTFBotFFDisableSecurity::IsNeeded( me, flag->GetTeamNumber() ) )
+	{
+		m_securityRetryTimer.Start( 15.0f );
+		return SuspendFor( new CTFBotFFDisableSecurity( flag->GetTeamNumber() ), "Enemy security is up - turning it off" );
+	}
+
+	// FFNB: scouts build a jump pad when a simulated launch lands them well along the way to the flag
+	if ( me->IsPlayerClass( TF_CLASS_SCOUT ) && m_jumpPadTimer.IsElapsed() )
+	{
+		m_jumpPadTimer.Start( RandomFloat( 8.0f, 15.0f ) );
+		Vector padSpot;
+		float padYaw;
+		if ( CTFBotFFJumpPad::FindLaunch( me, flag->WorldSpaceCenter(), &padSpot, &padYaw ) )
+		{
+			return SuspendFor( new CTFBotFFJumpPad( padSpot, padYaw ), "Building a jump pad toward the flag" );
+		}
 	}
 
 	// go pick up the flag

@@ -57,6 +57,7 @@
 #include "behaviors/pf2_bot_defend_flag.h"	// PF2NB
 #include "behaviors/pf2_hunted.h"	// PF2NB
 #include "behaviors/ff_command_point.h"
+#include "behaviors/ff_plant_detpack.h"
 
 // FFNB: TF2's medic behavior follows a patient with the medigun beam. FF medics have no beam: they
 // heal and cure by hitting teammates with the medkit (core/pf2_support.cpp) while playing the map.
@@ -417,6 +418,14 @@ ActionResult< CTFBot >	CTFBotScenarioMonitor::Update( CTFBot *me, float interval
 			m_pf2RestartTimer.Start( 1.0f );
 		else if ( m_pf2RestartTimer.IsElapsed() )
 			return ChangeTo( new CTFBotScenarioMonitor, "PF2NB: scenario action finished, choosing again" );
+	}
+
+	// FFNB: a demoman with a detpack goes and blows the map's detpack targets (walls, command centres)
+	if ( me->IsPlayerClass( TF_CLASS_DEMOMAN ) && !me->HasTheFlag() && m_ffDetpackTimer.IsElapsed() )
+	{
+		m_ffDetpackTimer.Start( RandomFloat( 8.0f, 15.0f ) );
+		if ( CTFBotFFPlantDetpack::IsPossible( me ) )
+			return SuspendFor( new CTFBotFFPlantDetpack, "Planting a detpack on a detpack target" );
 	}
 
 	return Continue();

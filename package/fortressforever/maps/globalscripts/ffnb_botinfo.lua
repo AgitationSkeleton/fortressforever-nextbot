@@ -93,12 +93,22 @@ function ffnb.census()
 					local tm = -1
 					pcall(function() tm = touchmask(t) end)
 					emit(idx, "ffnb_objf", "team", tostring(t.team) .. "|" .. tostring(t.botgoaltype) .. "|" .. tostring(tm), "item", item)
+					-- a trigger with its own onexplode handler reacts to explosions (detpack walls,
+					-- base_cp command centres): a demoman target
+					pcall(function()
+						if type(t.onexplode) == "function" and t.onexplode ~= trigger_ff_script.onexplode
+							and t.onexplode ~= info_ff_script.onexplode then
+							emit(idx, "ffnb_explode", "team", tostring(t.team), "", "")
+						end
+					end)
 					count = count + 1
 				end
 			end
 		end
 	end
 	emit(0, "ffnb_census_done", "objects", count, "map", GetMapName and GetMapName() or "")
+	ffnb.sec = {}   -- the plugin cleared its security state with the census: report it again
+	pcall(ffnb.watchsecurity)
 	say("census: " .. count .. " objects")
 end
 
@@ -126,8 +136,23 @@ function ffnb.watchstate()
 	end
 end
 
+-- base_shutdown security (button_<team>.sec_up): report each team's state when it changes, and
+-- once after every census so the plugin starts from the right state
+ffnb.sec = {}
+local sec_teams = { blue = 2, red = 3, yellow = 4, green = 5 }
+function ffnb.watchsecurity()
+	for name, num in pairs(sec_teams) do
+		local b = _G["button_" .. name]
+		if type(b) == "table" and type(b.sec_up) == "boolean" and b.sec_up ~= ffnb.sec[name] then
+			ffnb.sec[name] = b.sec_up
+			emit(0, "ffnb_security", "team", num, "state", b.sec_up and "up" or "down")
+		end
+	end
+end
+
 function ffnb.poll()
 	pcall(ffnb.watchstate)
+	pcall(ffnb.watchsecurity)
 	local ok, seq = pcall(GetConvar, "ffnb_census_seq")
 	if not ok or seq == nil or seq < 0 then return end
 	if ffnb.seq ~= nil and seq ~= ffnb.seq then

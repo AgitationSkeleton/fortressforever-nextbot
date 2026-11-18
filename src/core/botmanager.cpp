@@ -70,6 +70,7 @@ ConVar pf2nb_prevent_hibernation("ffnb_prevent_hibernation", "1", FCVAR_NONE,
 static CTFBot *s_bots[PF2NB_MAXPLAYERS + 1];
 static bool s_navLoaded = false;
 static bool s_levelActive = false;
+static bool s_warnedNoNav = false;   // told the players this map has no nav mesh (once per map)
 static float s_nextAreaUpdate = 0.0f;
 
 // ---------------------------------------------------------------------------------------------
@@ -108,6 +109,10 @@ public:
 		cmd->impulse = built.impulse;
 		PF2Grenades_Think(m_bot, cmd);   // PF2's prime-and-throw grenades
 		PF2Support_Think(m_bot, cmd);    // medic syringe / engineer wrench on teammates
+		{
+			extern void FF_Abilities_Think(CTFBot *bot, CUserCmd *cmd);
+			FF_Abilities_Think(m_bot, cmd);   // FF class skills on IN_ATTACK2 (pyro jetpack, ...)
+		}
 		// PF2 community maps have steps/stairs taller than a bot can walk up and meshes that don't mark
 		// them as jumps; a bot stuck on the ground for a while hops (TFBot itself never does)
 		{
@@ -551,6 +556,7 @@ void BotManager_OnServerActivate()
 		TheNavMesh->Reset();
 		NavErrorType err = TheNavMesh->Load();
 		s_navLoaded = (err == NAV_OK);
+		s_warnedNoNav = false;
 		if (s_navLoaded)
 		{
 			TheNavMesh->OnServerActivate();
@@ -600,6 +606,64 @@ void BotManager_OnLevelShutdown()
 	s_requests.RemoveAll();
 }
 
+// FFNB: keep active teams within one player of each other. Humans join and leave any team, and the
+// quota only adds to the emptiest team, so teams can drift (blue 2 / green 4). Every few seconds, if
+// the biggest team is 2+ players ahead of the smallest open team, remove one of its quota bots (a dead
+// one if possible, after a grace period otherwise); the quota re-adds a bot, which joins the emptiest.
+ConVar ff_bot_auto_balance("ff_bot_auto_balance", "1", FCVAR_NONE,
+	"Even out team sizes by replacing a bot on the biggest team (0 = off)");
+static void RebalanceTeams()
+{
+	static float s_next = 0.0f, s_unevenSince = -1.0f;
+	float now = (float)Plat_FloatTime();
+	if (!ff_bot_auto_balance.GetBool() || now < s_next)
+		return;
+	s_next = now + 3.0f;
+	if (s_requests.Count() || s_pendingBots > 0 || Puppet_Pending() > 0 || AnyBotStillJoining())
+		return;   // a bot is still being added; judge the teams once it is in
+	int biggest = TEAM_INVALID, most = -1, fewest = 1 << 30;
+	for (int t = FIRST_GAME_TEAM; t < TF_TEAM_COUNT; ++t)
+	{
+		CTeam *team = GetGlobalTeam(t);
+		if (!team || !FF_TeamIsActive(t))
+			continue;
+		int c = team->GetNumPlayers();
+		int *maxp = team->SendField<int>("m_iMaxPlayers");
+		bool full = maxp && *maxp > 0 && c >= *maxp;   // e.g. Hunted's one-player VIP team
+		if (!full && c < fewest)
+			fewest = c;
+		bool hasBot = false;
+		for (int i = 1; i <= gpGlobals->maxClients && !hasBot; ++i)
+			hasBot = s_bots[i] && s_bots[i]->GetTeamNumber() == t && s_bots[i]->HasAttribute(CTFBot::QUOTA_MANANGED);
+		if (hasBot && c > most)
+		{
+			most = c;
+			biggest = t;
+		}
+	}
+	if (biggest == TEAM_INVALID || fewest == (1 << 30) || most - fewest < 2)
+	{
+		s_unevenSince = -1.0f;
+		return;
+	}
+	if (s_unevenSince < 0.0f)
+		s_unevenSince = now;
+	for (int i = gpGlobals->maxClients; i >= 1; --i)
+	{
+		CTFBot *bot = s_bots[i];
+		if (!bot || bot->GetTeamNumber() != biggest || !bot->HasAttribute(CTFBot::QUOTA_MANANGED))
+			continue;
+		// wait for a dead bot so nobody vanishes mid-fight; after 20 s take any
+		if (bot->IsAlive() && now - s_unevenSince < 20.0f)
+			continue;
+		PF2NB_Log("auto balance: team %d has %d players vs %d, replacing %s", biggest, most, fewest, bot->GetPlayerName());
+		engine->ServerCommand(UTIL_VarArgs("kickid %d\n", bot->GetUserID()));
+		s_unevenSince = -1.0f;
+		s_next = now + 6.0f;   // let the quota re-add before judging again
+		return;
+	}
+}
+
 static int s_frames = 0, s_simFrames = 0;
 void BotManager_OnGameFrame(bool simulating)
 {
@@ -621,6 +685,15 @@ void BotManager_OnGameFrame(bool simulating)
 		TheNavMesh->Update();
 		return;
 	}
+	if (!s_navLoaded && !s_warnedNoNav && tf_bot_quota.GetInt() > 0 && UTIL_ClientsInGame() > 0)
+	{
+		// Without a mesh the quota adds nobody and ff_bot_add refuses; say so where players can see it
+		// (the refusal itself only reaches the server console).
+		s_warnedNoNav = true;
+		PF2NB_Log("no nav mesh for %s: bots can't play this map", STRING(gpGlobals->mapname));
+		engine->ServerCommand(UTIL_VarArgs("say [Bots] No nav mesh for %s yet, so bots can't play this map.\n",
+			STRING(gpGlobals->mapname)));
+	}
 	if (!simulating)
 	{
 		// An empty server does not simulate (no clients) and curtime stands still, so TFBot's quota
@@ -637,6 +710,7 @@ void BotManager_OnGameFrame(bool simulating)
 	}
 	if (s_navLoaded)
 	{
+		RebalanceTeams();
 		TheNavMesh->Update();
 		// keep everyone's last known nav area current (bots read it for enemies and teammates)
 		if (gpGlobals->curtime >= s_nextAreaUpdate || gpGlobals->curtime < s_nextAreaUpdate - 1.0f)
@@ -1044,7 +1118,35 @@ CON_COMMAND(ffnb_trace, "ffnb_trace <entindex> - sweep a player hull from the bo
 	PF2NB_Log("eye line frac=%.2f hit=%s #%d", tr.fraction, hit ? hit->GetClassname() : "none", hit ? hit->entindex() : -1);
 }
 
-CON_COMMAND(ffnb_ents, "ffnb_ents <classname-pattern> [near-entindex radius] - list entities with origin/name/state")
+CON_COMMAND(ffnb_field, "ffnb_field <entindex> <field> [int|float|bool]: read an entity field by name (debugging)")
+{
+	if (args.ArgC() < 3)
+		return;
+	CBaseEntity *e = PF2_EntityByIndex(atoi(args[1]));
+	if (!e)
+	{
+		PF2NB_Log("no entity %s", args[1]);
+		return;
+	}
+	const char *type = args.ArgC() > 3 ? args[3] : "int";
+	if (!V_stricmp(type, "float"))
+	{
+		float *f = e->Field<float>(args[2]);
+		PF2NB_Log("#%s %s %s = %s (curtime %.2f)", args[1], e->GetClassname(), args[2], f ? UTIL_VarArgs("%.2f", *f) : "<no such field>", gpGlobals->curtime);
+	}
+	else if (!V_stricmp(type, "bool"))
+	{
+		bool *b = e->Field<bool>(args[2]);
+		PF2NB_Log("#%s %s %s = %s", args[1], e->GetClassname(), args[2], b ? (*b ? "true" : "false") : "<no such field>");
+	}
+	else
+	{
+		int *i = e->Field<int>(args[2]);
+		PF2NB_Log("#%s %s %s = %s", args[1], e->GetClassname(), args[2], i ? UTIL_VarArgs("%d", *i) : "<no such field>");
+	}
+}
+
+CON_COMMAND(ffnb_ents,"ffnb_ents <classname-pattern> [near-entindex radius] - list entities with origin/name/state")
 {
 	if (args.ArgC() < 2)
 		return;
@@ -1426,8 +1528,13 @@ static void ScanHazards()
 		CBaseEntity *filter = e->HandleField("m_hFilter");
 		if (!filter)
 		{
-			BlockHazardFor(ext, TF_TEAM_RED);
-			BlockHazardFor(ext, TF_TEAM_BLUE);
+			// FFNB: a Lua-named trigger_hurt filters through its Lua class: not_<team>_trigger (base_shutdown
+			// lasers, spawn "slayers") hurts everyone but <team>. Block it for every active team it hurts.
+			extern int FF_CensusSpareTeam(int entindex);
+			int spare = FF_CensusSpareTeam(e->entindex());
+			for (int t = FIRST_GAME_TEAM; t < TF_TEAM_COUNT; ++t)
+				if (t != spare && FF_TeamIsActive(t))
+					BlockHazardFor(ext, t);
 		}
 		else if (filter->ClassMatches("filter_activator_tfteam"))
 		{

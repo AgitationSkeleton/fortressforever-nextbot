@@ -1,0 +1,101 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Create/update a GitHub release with this tag (e.g. v1.0.1). Leave empty to only build.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  # alliedmodders/hl2sdk branch sdk2013, pinned
+  HL2SDK_REF: 4c56ee5bc8bfe00793abb7d40eb3f6fb040f10d2
+  # alliedmodders/metamod-source 1.12 release tag (plugin API 16; loads under Metamod:Source 1.11 - 2.0)
+  MMSOURCE_TAG: 1.12.0.1228
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Fetch hl2sdk and Metamod:Source
+        shell: bash
+        run: |
+          git init -q deps/hl2sdk
+          git -C deps/hl2sdk fetch -q --depth 1 https://github.com/alliedmodders/hl2sdk.git "$HL2SDK_REF"
+          git -C deps/hl2sdk checkout -q FETCH_HEAD
+          git clone -q --depth 1 --branch "$MMSOURCE_TAG" https://github.com/alliedmodders/metamod-source.git deps/metamod-source
+      - name: Build ffnextbot.dll (MSVC x86, /MT)
+        run: python tools/build.py
+      - name: Check exports
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object FullName -match 'Hostx64\\x86' | Select-Object -First 1
+          $out = & $dumpbin.FullName /nologo /headers /exports build\ffnextbot.dll
+          $out | Select-String 'machine|CreateInterface'
+          if (-not ($out | Select-String 'CreateInterface')) { throw 'CreateInterface not exported' }
+          if (-not ($out | Select-String '14C machine')) { throw 'not an x86 DLL' }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item build\ffnextbot.dll, build\ffnextbot.pdb out\
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: out/
+          if-no-files-found: error
+
+  package:
+    needs: [windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Version
+        id: v
+        shell: bash
+        env:
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag="${GITHUB_REF#refs/tags/}";
+          elif [[ -n "$INPUT_TAG" ]]; then tag="$INPUT_TAG";
+          else tag=""; fi
+          if [[ -n "$tag" ]]; then version="${tag#v}"; else version="dev-${GITHUB_SHA::7}"; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Package
+        run: |
+          python3 tools/package.py plugin "${{ steps.v.outputs.version }}" --binary artifacts/windows/ffnextbot.dll
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-zips
+          path: dist/
+          if-no-files-found: error
+      - name: Publish release
+        if: steps.v.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          cat > notes.md <<'EOF'
+          Drop-in zip for the Fortress Forever game directory (`fortressforever/`). Windows dedicated servers;
+          needs Metamod:Source on the server. Nav meshes for the supported maps are a separate download
+          (`fortressforever-nextbot-navmeshes-*.zip`, attached to the first release).
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip --clobber
+          else
+            gh release create "$TAG" dist/*.zip --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA"
+          fi

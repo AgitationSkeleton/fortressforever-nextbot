@@ -1,0 +1,12 @@
+build/
+deps/
+dist/
+tools/local.json
+*.secret
+*.mdmp
+*.bak*
+__pycache__/
+package/addons/ffnextbot/bin/
+package/addons/ffnextbot/nav/
+!package/addons/ffnextbot/data/
+*.smx

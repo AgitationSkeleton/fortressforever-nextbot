@@ -35,6 +35,8 @@ void PF2NB_DoorsReset();
 void PF2_RefreshControlPointMasters();
 void PF2NB_HazardsFrame();
 void PF2NB_HazardsReset();
+void PF2NB_PruneDrops();
+void PF2NB_ForgetDrops();
 
 ConVar pf2nb_enable("ffnb_enable", "1", FCVAR_NONE, "Enable PF2 NextBot (TFBot) bots");
 ConVar tf_bot_civilian_chance("ff_bot_civilian_chance", "10", FCVAR_NONE,
@@ -561,6 +563,7 @@ void BotManager_OnServerActivate()
 		{
 			TheNavMesh->OnServerActivate();
 			PF2Hunted_LoadForMap(STRING(gpGlobals->mapname));
+			::PF2NB_PruneDrops();   // impossible drops, walls and ledges (after the per-map ladders are in)
 		}
 		PF2NB_Log("nav mesh for %s: %s (%d areas)", STRING(gpGlobals->mapname), s_navLoaded ? "loaded" : "NOT AVAILABLE, bots disabled on this map",
 			s_navLoaded ? TheNavMesh->GetNavAreaCount() : 0);
@@ -596,6 +599,7 @@ void BotManager_OnLevelShutdown()
 	TheTFBots().LevelShutdown();
 	::PF2NB_DoorsReset();
 	::PF2NB_HazardsReset();
+	::PF2NB_ForgetDrops();
 	ResetClassLearning();
 	PF2_ResetProxies();
 	if (TheNavMesh)
@@ -680,6 +684,7 @@ void BotManager_OnGameFrame(bool simulating)
 		// the old areas are gone: forget door/hazard blocks without touching them
 		::PF2NB_DoorsReset();
 		::PF2NB_HazardsReset();
+		::PF2NB_ForgetDrops();
 		// keep the generator stepping even with no mesh loaded (s_navLoaded false) or no bots (not simulating)
 		PF2_InvalidateEntityCache();
 		TheNavMesh->Update();
@@ -1270,9 +1275,216 @@ ConVar pf2nb_bad_connection_time("ffnb_bad_connection_time", "60", FCVAR_NONE, "
 struct BadConnection { unsigned int from, to; int team; float expire; int strikes; };
 static CUtlVector<BadConnection> s_badConnections;
 
+// Impossible drops. The generator links an area to a much lower one whenever their edges line up, also
+// where the drop is not open: hunted_stonehenge_test's spawn ramp (66) is linked west to the room
+// floor (13) that runs *under* the ramp, 236 units down. Paths took that "drop" (it is the shortest way
+// down), the bot stood at the ramp's edge waiting to fall and never did, so the VIP never left BLU's
+// spawn and the bodyguards escorting him stood with him. Each long drop onto an area that runs under
+// the upper one is checked once per map with world-only hull traces (doors and brush entities ignored):
+// step over the edge, fall, and see whether the fall ends near the lower area. A drop that lands nowhere
+// near it is skipped by CTFBotPathCost.
+ConVar ffnb_prune_drops("ffnb_prune_drops", "1", FCVAR_NONE, "At map load, drop connections whose fall cannot reach the lower area are not used by bots");
+static CUtlVector<uint64> s_impossibleDrops;   // sorted (from << 32 | to)
+
+static inline uint64 DropKey(unsigned int from, unsigned int to) { return ((uint64)from << 32) | to; }
+
+static bool IsImpossibleDrop(const CNavArea *from, const CNavArea *to)
+{
+	int lo = 0, hi = s_impossibleDrops.Count() - 1;
+	uint64 key = DropKey(from->GetID(), to->GetID());
+	while (lo <= hi)
+	{
+		int mid = (lo + hi) / 2;
+		if (s_impossibleDrops[mid] == key)
+			return true;
+		if (s_impossibleDrops[mid] < key)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return false;
+}
+
+// can a player standing at 'edge' (on 'from', at its rim toward 'dir') step off and fall into 'to'?
+static bool DropLandsIn(const CNavArea *from, const CNavArea *to, NavDirType dir, Vector edge)
+{
+	CTraceFilterWorldOnly world;
+	const Vector mins(-8, -8, 0), maxs(8, 8, 40);
+	edge.z = from->GetZ(edge);
+	Vector back = edge, over = edge;
+	AddDirectionVector(&back, dir, -16.0f);
+	AddDirectionVector(&over, dir, 16.0f + 1.0f);
+	back.z = from->GetZ(back) + StepHeight;
+	over.z = back.z;
+	trace_t tr;
+	UTIL_TraceHull(back, over, mins, maxs, MASK_PLAYERSOLID_BRUSHONLY, &world, &tr);
+	if (tr.startsolid || tr.fraction < 1.0f)
+		return false;   // a wall or railing at the rim
+	float zTo = to->GetZ(over);
+	UTIL_TraceHull(over, Vector(over.x, over.y, zTo - 8.0f), mins, maxs, MASK_PLAYERSOLID_BRUSHONLY, &world, &tr);
+	return tr.endpos.z <= zTo + StepHeight;   // landed on (or near) the lower area, not on something above it
+}
+
+// Walk a connection with a player hull (world geometry only; doors and props open or move): from
+// 'from' at its rim, across the portal into 'to'. Covers what the generator links but a player cannot do:
+// railings and thin walls between two floors, ledges too high to jump, low ceilings over a step.
+static bool s_walkDebug = false;
+static bool WalkCrosses(const CNavArea *from, const CNavArea *to, NavDirType dir, Vector edge);
+CON_COMMAND(ffnb_walk, "ffnb_walk <from-area> <to-area>: walk one nav connection with a player hull and print the traces")
+{
+	if (args.ArgC() < 3 || !TheNavMesh)
+		return;
+	CNavArea *a = TheNavMesh->GetNavAreaByID(atoi(args[1])), *b = TheNavMesh->GetNavAreaByID(atoi(args[2]));
+	if (!a || !b)
+		return;
+	for (int d = 0; d < NUM_DIRECTIONS; ++d)
+		if (a->IsConnected(b, (NavDirType)d))
+		{
+			Vector c;
+			float half;
+			a->ComputePortal(b, (NavDirType)d, &c, &half);
+			PF2NB_Log("connection %u -> %u dir %d portal (%.0f %.0f %.0f) half %.0f zFrom %.0f zTo %.0f", a->GetID(), b->GetID(), d, c.x, c.y, c.z, half, a->GetZ(c), b->GetZ(c));
+			s_walkDebug = true;
+			for (int s = -1; s <= 1; ++s)
+			{
+				Vector p = c;
+				float off = s * MAX(0.0f, half - 16.0f);
+				if (d == NORTH || d == SOUTH) p.x += off; else p.y += off;
+				PF2NB_Log("  sample %d: %s", s, WalkCrosses(a, b, (NavDirType)d, p) ? "crosses" : "BLOCKED");
+			}
+			s_walkDebug = false;
+		}
+}
+
+static bool WalkCrosses(const CNavArea *from, const CNavArea *to, NavDirType dir, Vector edge)
+{
+	CTraceFilterWorldOnly world;
+	edge.z = from->GetZ(edge);
+	Vector back = edge, over = edge;
+	// a railing or thin wall the generator linked across sits on the portal; a short crossing finds it and
+	// keeps the hull clear of walls running alongside (areas extend half a sample step past valid spots)
+	AddDirectionVector(&back, dir, -12.0f);
+	AddDirectionVector(&over, dir, 12.0f);
+	float zFrom = from->GetZ(back), zTo = to->GetZ(over);
+	float dz = zTo - zFrom;
+	if (dz > JumpCrouchHeight + 2.0f)
+		return false;   // no jump reaches it (ladders are separate connections)
+	// a narrow hull (as for drops): walls running alongside a narrow portal must not count, railings and
+	// thin walls across it still do
+	const Vector mins(-8, -8, 0), maxs(8, 8, HumanCrouchHeight - StepHeight);
+	trace_t tr;
+	float startZ = zFrom + StepHeight;
+	if (dz > StepHeight)
+	{
+		// a jump: room to get up from our floor to a step above the target floor
+		float topZ = zTo + StepHeight;
+		UTIL_TraceHull(Vector(back.x, back.y, startZ), Vector(back.x, back.y, topZ), mins, maxs, MASK_PLAYERSOLID_BRUSHONLY, &world, &tr);
+		if (s_walkDebug) PF2NB_Log("    jump trace (%.0f %.0f %.0f)->z %.0f: startsolid %d frac %.2f ent #%d", back.x, back.y, startZ, topZ, tr.startsolid, tr.fraction, tr.m_pEnt ? ((CBaseEntity *)tr.m_pEnt)->entindex() : -1);
+		if (tr.startsolid || tr.fraction < 1.0f)
+			return false;
+		startZ = topZ;
+	}
+	// across, a step above the higher floor (follows rising slopes and stairs; going down we fall after the rim)
+	UTIL_TraceHull(Vector(back.x, back.y, startZ), Vector(over.x, over.y, MAX(zTo, zFrom) + StepHeight), mins, maxs,
+		MASK_PLAYERSOLID_BRUSHONLY, &world, &tr);
+	if (s_walkDebug) PF2NB_Log("    walk trace (%.0f %.0f %.0f)->(%.0f %.0f): startsolid %d frac %.2f normal (%.2f %.2f %.2f)", back.x, back.y, startZ, over.x, over.y, tr.startsolid, tr.fraction, tr.plane.normal.x, tr.plane.normal.y, tr.plane.normal.z);
+	return !tr.startsolid && tr.fraction >= 1.0f;
+}
+
+ConVar ffnb_prune_walls("ffnb_prune_walls", "1", FCVAR_NONE, "At map load, connections a player hull cannot walk or jump across (railings, thin walls, ledges too high) are not used by bots");
+
+static void PruneImpossibleDrops()
+{
+	s_impossibleDrops.RemoveAll();
+	if (!ffnb_prune_drops.GetBool() || !TheNavMesh)
+		return;
+	int checked = 0, checkedWalls = 0, walls = 0;
+	FOR_EACH_VEC(TheNavAreas, it)
+	{
+		CNavArea *a = TheNavAreas[it];
+		for (int d = 0; d < NUM_DIRECTIONS; ++d)
+		{
+			const NavConnectVector *adj = a->GetAdjacentAreas((NavDirType)d);
+			FOR_EACH_VEC(*adj, k)
+			{
+				CNavArea *b = (*adj)[k].area;
+				if (!b)
+					continue;
+				Vector centre;
+				float half;
+				a->ComputePortal(b, (NavDirType)d, &centre, &half);
+				if (a->GetZ(centre) - b->GetZ(centre) <= JumpCrouchHeight)
+				{
+					// walkable, a step, a jump up or a short hop down: walk it with a hull
+					if (!ffnb_prune_walls.GetBool() || half < 1.0f || a->IsUnderwater() || b->IsUnderwater())
+						continue;   // swimming crosses heights a walking hull cannot
+					++checkedWalls;
+					bool ok = false;
+					for (int s = -1; s <= 1 && !ok; ++s)
+					{
+						Vector p = centre;
+						float off = s * MAX(0.0f, half - 16.0f);
+						if (d == NORTH || d == SOUTH)
+							p.x += off;
+						else
+							p.y += off;
+						ok = WalkCrosses(a, b, (NavDirType)d, p);
+					}
+					if (!ok)
+					{
+						s_impossibleDrops.AddToTail(DropKey(a->GetID(), b->GetID()));
+						++walls;
+					}
+					continue;
+				}
+				// only a lower area that runs underneath this one (the generator linked a floor to the one
+				// below it); drops off a ledge across a gap - common on displacement terrain, where the traces
+				// below are not exact - are left alone
+				const Vector &an = a->GetCorner(NORTH_WEST), &as = a->GetCorner(SOUTH_EAST);
+				const Vector &bn = b->GetCorner(NORTH_WEST), &bs = b->GetCorner(SOUTH_EAST);
+				if (MIN(as.x, bs.x) - MAX(an.x, bn.x) < 16.0f || MIN(as.y, bs.y) - MAX(an.y, bn.y) < 16.0f)
+					continue;
+				++checked;
+				// the portal's middle and both ends (inset by a half hull); one open spot is enough
+				bool ok = false;
+				for (int s = -1; s <= 1 && !ok; ++s)
+				{
+					Vector p = centre;
+					float off = s * MAX(0.0f, half - 16.0f);
+					if (d == NORTH || d == SOUTH)
+						p.x += off;
+					else
+						p.y += off;
+					ok = DropLandsIn(a, b, (NavDirType)d, p);
+				}
+				if (!ok)
+					s_impossibleDrops.AddToTail(DropKey(a->GetID(), b->GetID()));
+			}
+		}
+	}
+	s_impossibleDrops.Sort([](const uint64 *l, const uint64 *r) { return *l < *r ? -1 : (*l > *r ? 1 : 0); });
+	PF2NB_Log("nav: %d drops onto a floor below checked, %d walk/jump connections checked; %d impossible (%d walls/ledges), bots will not use them; ffnb_drops lists them",
+		checked, checkedWalls, s_impossibleDrops.Count(), walls);
+}
+void PF2NB_PruneDrops() { PruneImpossibleDrops(); }
+CON_COMMAND(ffnb_drops, "Re-check the nav mesh's long drops and list the ones bots will not use")
+{
+	if (!TheNavMesh || !TheNavMesh->IsLoaded())
+		return;
+	PF2_InvalidateEntityCache();
+	PruneImpossibleDrops();
+	for (uint64 k : s_impossibleDrops)
+		PF2NB_Log("   impossible drop %u -> %u", (unsigned int)(k >> 32), (unsigned int)(k & 0xffffffffu));
+}
+void PF2NB_ForgetDrops() { s_impossibleDrops.RemoveAll(); }
+
 bool PF2NB_IsBadConnection(const CNavArea *from, const CNavArea *to, int team)
 {
-	if (!from || !to || s_badConnections.Count() == 0)
+	if (!from || !to)
+		return false;
+	if (s_impossibleDrops.Count() && IsImpossibleDrop(from, to))
+		return true;
+	if (s_badConnections.Count() == 0)
 		return false;
 	unsigned int f = from->GetID(), t = to->GetID();
 	for (const BadConnection &b : s_badConnections)
@@ -1523,6 +1735,11 @@ static void ScanHazards()
 			continue;
 		Extent ext;
 		e->CollisionProp()->WorldSpaceAABB(&ext.lo, &ext.hi);
+		// map-wide kill volumes (hunted maps kill the losing team at round end: Stonehenge's
+		// trigger_hurt_civ_failed_to_ascend covers the whole map) cannot be avoided; blocking them blocked
+		// every area for that team, so its bots stood still
+		if ((ext.hi - ext.lo).AsVector2D().IsLengthGreaterThan(6000.0f))
+			continue;
 		ext.lo.z -= HalfHumanHeight;
 		ext.hi.z -= 4.0f;   // floors resting exactly on a hurt volume's top face (Stonehenge's water) stay usable
 		CBaseEntity *filter = e->HandleField("m_hFilter");

@@ -15,7 +15,7 @@ and shares its core.
 | Attack/defend, invade/defend (`base_ad`, `base_id`, zone variants) | Attackers carry the current phase's flag to the cap that accepts it. Defenders guard that cap. Phases follow the map Lua (removed/restored objectives). |
 | Command points (`base_cp`) | Take the nearest zone their side doesn't own, otherwise hold the owned zone nearest the front. |
 | Ball (`base_fortball`) | Treat the ball as a neutral flag and carry it to their goal. |
-| Hunted (`base_hunted`) | One Civilian VIP heads for the escape. Allied bodyguards climb up and press the escape-door buttons, then escort. Assassins hunt the VIP. |
+| Hunted (`base_hunted`) | One Civilian VIP heads for the escape. Allied bodyguards climb up and press the escape-door buttons, then escort. Assassins hunt the VIP. The VIP stays with its bodyguards while the escape is shut and takes a route that varies per life; assassin snipers roam vantage points near the VIP and snipe on sight. |
 | Security (`base_shutdown`: ff_destroy, ff_schtop, ...) | A bot going for a flag that sits behind active security first goes to the enemy's security switch (`button_<team>` or `<team>_security_trigger`), touching, using and shooting it, then takes the flag while security is down. Lasers and slayers are avoided per their Lua team filter. |
 | Deathmatch / teamplay / anything else | Roam and fight (TFBot SeekAndDestroy), across up to four teams with FFA and ally rules respected. |
 
@@ -102,6 +102,8 @@ FF-specific settings:
 | `ff_bot_jetpack` | 1 | Pyros use the jetpack |
 | `ff_bot_jumppad` | 1 | Scouts build and ride jump pads |
 | `ff_bot_jumppad_min_gain` | 600 | Path distance a jump pad launch must save |
+| `ffnb_prune_drops` | 1 | At map load, stop bots using drops whose fall can't reach the lower area |
+| `ffnb_prune_walls` | 1 | At map load, walk every mesh connection with a player hull and stop bots using those no player can cross (ledges too high to jump, railings, thin walls) |
 
 ### Debug commands
 
@@ -114,6 +116,8 @@ FF-specific settings:
 | `ffnb_path <bot>` | A bot's current path |
 | `ffnb_area <id>` | One nav area's details |
 | `ffnb_navat x y z [bot]` | The nav area at a point, and whether a bot can reach it |
+| `ffnb_drops` | Re-check the mesh's drops, walls and ledges; list the connections bots skip |
+| `ffnb_walk <from> <to>` | Walk one mesh connection with a player hull and print the traces |
 | `ffnb_grenades [reset]` | Grenade throws per class and slot |
 | `ffnb_field <ent> <field> [int\|float\|bool]` | Read an entity field by name |
 | `ffnb_perf [reset]` | Frame profile since the last reset: server frame time, and the plugin's own time split into bot movement, bot thinking, path searches and vision. Use it to tell bot load apart from other server stutter. |

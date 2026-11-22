@@ -118,13 +118,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.v.outputs.tag }}
         run: |
-          cat > notes.md <<'EOF'
+          cat > install.md <<'EOF'
           Drop-in zip for the Fortress Forever game directory (`fortressforever/`). Windows dedicated servers;
           needs Metamod:Source on the server. Nav meshes for the supported maps are a separate download
-          (`fortressforever-nextbot-navmeshes-*.zip`, attached to the first release).
+          (`fortressforever-nextbot-navmeshes-*.zip`; the 60-map pack is attached to v1.1.0).
           EOF
+          # patch notes for this tag (docs/releases/<tag>.md), then the install notes
+          if [ -f "docs/releases/$TAG.md" ]; then
+            { cat "docs/releases/$TAG.md"; echo; echo '---'; echo; cat install.md; } > notes.md
+          else
+            cp install.md notes.md
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/*.zip --clobber
+            gh release edit "$TAG" --notes-file notes.md
           else
             gh release create "$TAG" dist/*.zip --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA"
           fi

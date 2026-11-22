@@ -16,7 +16,11 @@
 #include "tier1/memstack.h"
 
 // BOTPORT: Clean up relationship between team index and danger storage in nav areas
-enum { MAX_NAV_TEAMS = 2 };
+// FFNB: one slot per team number (FF has blue 2, red 3, yellow 4, green 5). With 2 slots, "team % 2" made
+// yellow share red's blocked flags (and green blue's): a door blocked for team 2 also sealed yellow in its
+// own spawn (ff_hunted's assassins). The .nav file still stores NAV_FILE_TEAMS entries.
+enum { MAX_NAV_TEAMS = 6 };
+enum { NAV_FILE_TEAMS = 2 };
 
 #define DebuggerBreakOnNaN_StagingOnly( _val )
 

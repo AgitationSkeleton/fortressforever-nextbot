@@ -359,7 +359,7 @@ void CNavArea::Save( CUtlBuffer &fileBuffer, unsigned int version ) const
 	}
 
 	// save earliest occupy times
-	for( i=0; i<MAX_NAV_TEAMS; ++i )
+	for( i=0; i<NAV_FILE_TEAMS; ++i )
 	{
 		// no spot in the map should take longer than this to reach
 		fileBuffer.Put( &m_earliestOccupyTime[i], sizeof(m_earliestOccupyTime[i]) );
@@ -631,7 +631,7 @@ NavErrorType CNavArea::Load( CUtlBuffer &fileBuffer, unsigned int version, unsig
 		return NAV_OK;
 
 	// load earliest occupy times
-	for( int i=0; i<MAX_NAV_TEAMS; ++i )
+	for( int i=0; i<NAV_FILE_TEAMS; ++i )
 	{
 		// no spot in the map should take longer than this to reach
 		m_earliestOccupyTime[i] = fileBuffer.GetFloat();

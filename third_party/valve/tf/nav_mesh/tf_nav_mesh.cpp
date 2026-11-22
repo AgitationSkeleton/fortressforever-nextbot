@@ -800,6 +800,19 @@ void CTFNavMesh::ComputeBlockedAreas( void )
 			}
 		}
 
+		// FFNB: a door that is itself a Lua team door (ff_hunted's yellow spawn doors: func_door_rotating
+		// "yellow_door_*" with a respawndoor Lua class, opened by touching the door, no trigger around it)
+		// belongs to that team and is not a wall - treated as one, it sealed yellow inside its spawns
+		{
+			extern int FF_CensusTeamOf( int entindex );
+			int luaTeam = FF_CensusTeamOf( door->entindex() );
+			if ( luaTeam >= FIRST_GAME_TEAM )
+			{
+				isDoorTriggerControlled = true;
+				doorOwnedByTeam = luaTeam;
+			}
+		}
+
 		// is this door acting like a wall?
 		bool isDoorWall = isDoorTriggerControlled ? false : isDoorClosed;
 
@@ -830,7 +843,17 @@ void CTFNavMesh::ComputeBlockedAreas( void )
 				// this door is blocking navigation for at least one team
 				if ( !area->HasAttributeTF( TF_NAV_DOOR_NEVER_BLOCKS ) )
 				{
-					area->MarkAsBlocked( blockedTeam, door );
+					// FFNB: a team-owned door blocks every team that is neither the owner nor allied to it (up to
+					// four teams; TF2 only knew "the other one")
+					if ( doorOwnedByTeam != TEAM_UNASSIGNED )
+					{
+						extern bool FF_AreTeamsFriendly( int a, int b );
+						for ( int t = FIRST_GAME_TEAM; t < TF_TEAM_COUNT; ++t )
+							if ( !FF_AreTeamsFriendly( t, doorOwnedByTeam ) )
+								area->MarkAsBlocked( t, door );
+					}
+					else
+						area->MarkAsBlocked( blockedTeam, door );
 				}
 			}
 			else

@@ -43,6 +43,7 @@ ConVar tf_bot_civilian_chance("ff_bot_civilian_chance", "10", FCVAR_NONE,
 	"Percent chance a TFBot picks Civilian when choosing a class (only if pf_allow_special_class is 1, never on hunted/VIP maps)", true, 0, true, 100);
 ConVar tf_bot_civilian_max_per_team("ff_bot_civilian_max_per_team", "1", FCVAR_NONE, "Most Civilian bots per team (random Civilian)");
 ConVar pf2nb_debug("ffnb_debug", "0", FCVAR_NONE, "Log PF2 NextBot glue activity");
+ConVar ffnb_debug_blocks("ffnb_debug_blocks", "0", FCVAR_NONE, "Log every MarkAsBlocked on this nav area id (0 = off)");
 ConVar ffnb_spawnroom_radius("ffnb_spawnroom_radius", "600", FCVAR_NONE, "FF has no func_respawnroom: nav areas within this travel distance of a team spawn count as its spawn room");
 ConVar pf2nb_unstick_jump("ffnb_unstick_jump", "1", FCVAR_NONE, "Bots stuck on the ground for 2+ seconds jump (steps the nav mesh does not mark as jumps)");
 
@@ -1748,9 +1749,14 @@ static void ScanHazards()
 			// FFNB: a Lua-named trigger_hurt filters through its Lua class: not_<team>_trigger (base_shutdown
 			// lasers, spawn "slayers") hurts everyone but <team>. Block it for every active team it hurts.
 			extern int FF_CensusSpareTeam(int entindex);
+			extern int FF_CensusTeamOf(int entindex);
 			int spare = FF_CensusSpareTeam(e->entindex());
+			// otherwise a Lua team on the hurt trigger means it hurts only that team (team_only_trigger,
+			// ff_hellion_classic_b3's KILL_KILL_KILL "blue_slayer" at RED's spawn exit, which kills BLU
+			// intruders - blocking it for everyone sealed RED in its spawn)
+			int only = spare < FIRST_GAME_TEAM ? FF_CensusTeamOf(e->entindex()) : -1;
 			for (int t = FIRST_GAME_TEAM; t < TF_TEAM_COUNT; ++t)
-				if (t != spare && FF_TeamIsActive(t))
+				if (t != spare && (only < FIRST_GAME_TEAM || t == only) && FF_TeamIsActive(t))
 					BlockHazardFor(ext, t);
 		}
 		else if (filter->ClassMatches("filter_activator_tfteam"))

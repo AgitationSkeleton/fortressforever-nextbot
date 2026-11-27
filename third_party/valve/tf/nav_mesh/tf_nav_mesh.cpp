@@ -800,6 +800,25 @@ void CTFNavMesh::ComputeBlockedAreas( void )
 			}
 		}
 
+		// FFNB: many FF maps open their spawn doors from a Lua trigger_ff_script ("red_spawn1door_trigger",
+		// team = the spawn's team) rather than a trigger_multiple. Missed, the door counted as a wall for
+		// everyone and sealed the spawn room (ff_roasted_classic: a whole team stood behind its own door)
+		for ( CBaseEntity *script = gEntList.FindEntityByClassname( NULL, "trigger_ff_script" ); script; script = gEntList.FindEntityByClassname( script, "trigger_ff_script" ) )
+		{
+			const char *sname = STRING( script->GetEntityName() );
+			if ( !sname || !V_stristr( sname, "door" ) || V_stristr( sname, "location" ) )
+				continue;
+			triggerExtent.Init( script );
+			triggerExtent.lo -= Vector( 32.0f, 32.0f, 32.0f );
+			triggerExtent.hi += Vector( 32.0f, 32.0f, 32.0f );
+			if ( !triggerExtent.IsOverlapping( doorExtent ) )
+				continue;
+			isDoorTriggerControlled = true;
+			int scriptTeam = script->GetTeamNumber();
+			if ( scriptTeam >= FIRST_GAME_TEAM )
+				doorOwnedByTeam = scriptTeam;
+		}
+
 		// FFNB: a door that is itself a Lua team door (ff_hunted's yellow spawn doors: func_door_rotating
 		// "yellow_door_*" with a respawndoor Lua class, opened by touching the door, no trigger around it)
 		// belongs to that team and is not a wall - treated as one, it sealed yellow inside its spawns

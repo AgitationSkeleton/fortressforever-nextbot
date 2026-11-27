@@ -12,6 +12,7 @@
 #include "bot/behavior/scenario/capture_the_flag/tf_bot_deliver_flag.h"
 #include "behaviors/ff_disable_security.h"   // FFNB
 #include "behaviors/ff_jump_pad.h"           // FFNB
+#include "bot/behavior/tf_bot_seek_and_destroy.h"   // FFNB
 
 
 //---------------------------------------------------------------------------------------------
@@ -113,7 +114,20 @@ ActionResult< CTFBot > CTFBotFetchFlag::Update( CTFBot *me, float interval )
 	{
 		CTFBotPathCost cost( me, DEFAULT_ROUTE );
 		float maxPathLength = TFGameRules()->IsMannVsMachineMode() ? TFBOT_MVM_MAX_PATH_LENGTH : 0.0f;
-		if ( m_path.Compute( me, flag->WorldSpaceCenter(), cost, maxPathLength ) == false )
+		bool computed = m_path.Compute( me, flag->WorldSpaceCenter(), cost, maxPathLength );
+		// FFNB: Compute() also fails when the flag is just outside the closest area, so judge by where the
+		// path ends. A flag at home that no path reaches (a flag room the mesh doesn't cover) used to leave
+		// the bot standing at the end of its partial path for good; every bot on the team ended up there
+		if ( !flag->IsDropped() && ( !m_path.IsValid() || ( m_path.GetEndPosition() - flag->GetAbsOrigin() ).IsLengthGreaterThan( 200.0f ) ) )
+		{
+			if ( m_isTemporary )
+			{
+				return Done( "Flag unreachable" );
+			}
+			m_repathTimer.Start( RandomFloat( 1.0f, 2.0f ) );
+			return SuspendFor( new CTFBotSeekAndDestroy( RandomFloat( 10.0f, 20.0f ) ), "Flag unreachable at home - hunting enemies" );
+		}
+		if ( computed == false )
 		{
 			if ( flag->IsDropped() )
 			{

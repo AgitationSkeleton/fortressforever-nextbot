@@ -801,7 +801,39 @@ CON_COMMAND(ffnb_nav_seed_ladders, "ffnb_nav_seed_ladders [go]: list ladder tops
 		}
 		++seeds;
 	}
-	Msg("[FFNB] %d uncovered ladder tops, %d uncovered spawns\n", ladderSeeds, spawnSeeds.Count());
+	// FFNB: objectives with no nav nearby (ff_well's flag rooms sit on a level only its ladders reach, and
+	// the ladder tops were never seeded): the bots path to the closest area instead and wait there forever
+	int objSeeds = 0;
+	for (int i = 0; i < ff::Census_Count(); ++i)
+	{
+		const ff::CensusObj *o = ff::Census_At(i);
+		if (!o || (o->kind != ff::OBJ_FLAG && o->kind != ff::OBJ_CAP && o->kind != ff::OBJ_CPZONE
+			&& o->kind != ff::OBJ_HUNTED_ESCAPE && o->kind != ff::OBJ_BALL))
+			continue;
+		CBaseEntity *e = PF2_EntityByIndex(o->ent);
+		if (!e)
+			continue;
+		Vector mn, mx;
+		e->CollisionProp()->WorldSpaceAABB(&mn, &mx);
+		Vector pos((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, mn.z + HalfHumanHeight);
+		Vector n;
+		if (!TheNavMesh->GetGroundHeight(pos, &pos.z, &n))
+			continue;
+		if (TheNavMesh->GetNavArea(pos + Vector(0, 0, 8), 64.0f) || TheNavMesh->GetNearestNavArea(pos, false, 96.0f, false, false))
+			continue;   // covered
+		pos.x = TheNavMesh->SnapToGrid(pos.x);
+		pos.y = TheNavMesh->SnapToGrid(pos.y);
+		Msg("[FFNB] %s %s (%.0f %.0f %.0f) has no nav: seed\n", ff::Census_KindName(o->kind), o->name, pos.x, pos.y, pos.z);
+		if (go)
+		{
+			if (!seeds)
+				TheNavMesh->ClearWalkableSeeds();
+			TheNavMesh->AddWalkableSeed(pos, n);
+		}
+		++seeds;
+		++objSeeds;
+	}
+	Msg("[FFNB] %d uncovered ladder tops, %d uncovered spawns, %d uncovered objectives\n", ladderSeeds, spawnSeeds.Count(), objSeeds);
 	Msg("[FFNB] %d seeds\n", seeds);
 	if (go && seeds)
 	{
